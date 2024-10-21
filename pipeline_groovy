@@ -1,0 +1,362 @@
+import groovy.json.*
+
+import java.time.LocalDateTime
+
+
+        @NonCPS
+
+        def String gitlabServerUrl
+
+        def stages
+
+        def String framework,area
+
+        def String sonarQualityGate
+
+        //def String telegramGroupId
+
+        def deployInfo,artifactId,groupId,version,pomDeploy
+
+        def latestVersion
+
+        def CHECKOUT_VARS
+
+        def GIT_COMMIT_VAR
+
+        def GIT_COMMIT_DATA
+
+        def RESPONSE_GITLAB_COMMIT
+
+        def GIT_COMMIT_MESSAGE
+
+        def GIT_COMMITTER_EMAIL
+
+
+
+            def mainFlow(){
+
+                echo "--------------------------------   OFFLINE ARTIFACT DEPLOY -----------------------------------------"
+
+                echo "una linea de prueba"
+
+                echo "----------------------------------------------------------------------------------------------------"
+
+                try{
+
+                    //STG1
+
+                    stage("Git Clone repository"){
+
+                        cloneGitlabRepository()
+
+                    }
+
+                    //STG2
+
+                    stage("Init deploy parameters"){
+
+                          initVars("http://gitlab.lab:441","http://nexuslocal.local:8081","-859927367",env.branch_NAME)
+
+                    }
+
+
+
+                    stage("Build"){
+
+                              
+                              generateGradlebuild()
+                              
+
+                             
+                            }
+
+                    stage("BuildProject"){
+
+                              
+                              
+                              
+                              buildProject()
+
+                             
+                            }
+
+                    stage("BuildDokka"){
+
+                             buildDokka() 
+                             
+
+                             
+                            }  
+
+                    stage("BuildFlavors"){
+
+                             buildflavors() 
+                             
+
+                             
+                            }         
+
+
+
+                }
+
+                catch(err){
+
+                    currentBuild.result = 'FAILED'
+
+                    throw err
+
+                }finally{
+
+                    echo "finally pipeline"
+
+                    //STG-NOTIFY
+
+                    stage("Send Deploy Notifications"){
+
+                        currentBuild.result = currentBuild.result.equals('FAILED') ? 'FAILED' : 'SUCCESS'
+
+                        //sendNotifications(currentBuild.result,"-859927367")
+
+                    }
+
+                }
+
+                }
+
+
+
+                def void cloneGitlabRepository(){
+
+                    try{
+
+                        echo "-> git clone repository from GitLab Offline Id : ${params.projectId} "
+
+                        deleteDir()
+
+                        given: "An url to clone a git repository"
+
+                        when: "Try to deploy a new artifact"
+
+                        then: "Clone the repository and Get git variables"
+
+                        CHECKOUT_VARS = checkout scm
+
+                        echo "${CHECKOUT_VARS}"
+
+                        
+                    }catch(err){
+
+                        throw new Exception("No es posible clonar el repositorio de la libreria \n ERROR:${err}")
+
+                    }
+
+                }
+
+
+
+                 def void initVars(def gitlabServerUrl,def artifactoryUrl,def telegramGroupId,def environmentBranch){
+
+                    try{
+
+                        echo "Init Parameters -> "
+
+                        given: "Gitlab Server Url , Jenkins and Artifactory and an active environment branch"
+
+                        when: "New Job was initializer"
+
+                        then: "Init the globar variables and get project pom properties" 
+
+                            this.gitlabServerUrl=gitlabServerUrl
+
+                            this.artifactoryUrl=artifactoryUrl
+
+                            this.stages=[:]
+
+                            this.deployInfo=[:]
+
+                            this.deployInfo.awsEnvironment = environmentBranch
+
+                          
+                            echo "end "
+
+                    }catch(err){
+
+                        throw new Exception("No fue posible inicializar las variables para despliegue \n ERROR:${err}")
+
+                    }            
+
+                }
+
+                
+                def void generateGradlebuild(){
+
+                    echo "- - - - -> descargando build.gradle < - - - - - "
+
+                    dir('/var/jenkins_home/workspace/tercero/'){
+
+                        try{
+
+                            
+                            sh "git clone http://gitlab.lab/devops_demo/utils/nuevogradlebuild.git"
+
+                            
+                            dir('/var/jenkins_home/workspace/tercero/BASAAir') {
+
+                                                   
+                            sh "cat /var/jenkins_home/workspace/tercero/nuevogradlebuild/copy_gradle >> build.gradle" 
+
+                            versionNexus=[]
+
+                            versionNexus = sh(returnStdout: true, script: "grep -w versionName build.gradle | head -1").trim().replace('"','  ').replace('versionName',' ').trim()
+
+                            sh "sed -i 's/numeroversion/${versionNexus}/g' build.gradle"
+
+
+                            withCredentials([usernamePassword(credentialsId: 'nexus', passwordVariable: 'userPass', usernameVariable: 'userName')]) {
+                             
+                             sh "sed -i 's/nameuser/${userName}/g' build.gradle"
+                             sh "sed -i 's/passuser/${userPass}/g' build.gradle"  
+
+                            
+
+                            }
+                              
+                      }
+
+
+                                                 
+                            
+                        }catch(Exception e){
+
+                            return error("No se pudo editar el arcihvo gradlebuild, revisa si existe. Exception: ${e}")
+
+                        }
+
+                    }
+
+                 }
+
+
+
+
+                def void buildProject(){
+
+                    try{
+
+                         withCredentials([usernamePassword(credentialsId: 'nexus', passwordVariable: 'password', usernameVariable: 'usuario')]) {
+                            
+                            sh 'chmod 777 gradlew'   
+
+                            sh './gradlew publish'
+
+                    
+                          
+                    }
+
+                     }catch(err){
+
+                        throw new Exception("No fue posible generar los archivos gradle \n ERROR:${err}")
+
+                    } 
+
+                }
+
+
+                    def void buildDokka(){
+
+                    try{
+
+                         sh 'chmod 777 gradlew'
+
+                         sh './gradlew dokkaHtml'
+
+                         //sh './gradlew dokkaHtmlMultiModule'
+                          
+                         //sh './gradlew dokkaGfm'
+
+                         //sh './gradlew dokkaJavadoc'
+
+                            dir('/var/jenkins_home/workspace/tercero/BASAAir/build/'){
+
+                                sh "ls -lrt"
+           
+                                sh "tar -czvf dokka.tar.gz dokka/"
+
+                              
+                                withCredentials([usernamePassword(credentialsId: 'nexus', passwordVariable: 'password', usernameVariable: 'usuario')]) {
+
+                                sh "curl -v -u ${usuario}:${password} --upload-file dokka.tar.gz  ${artifactoryUrl}/repository/maven-android/${versionNexus}/dokka.tar.gz"
+
+                                }
+                            }
+
+                        
+
+                     }catch(err){
+
+                        throw new Exception("No fue posible generar los archivos gradle \n ERROR:${err}")
+
+                    } 
+
+                }
+
+
+                    def void buildflavors(){
+                    try{
+                         sh "git clone http://gitlab.lab/devops_demo/utils/elotroarchivo.git"
+                           dir('/var/jenkins_home/workspace/tercero/BASAAir/') {
+                            sh "mv build.gradle build.gradle.old"
+                            }
+                         sh "cp /var/jenkins_home/workspace/tercero/elotroarchivo/build.gradle /var/jenkins_home/workspace/tercero/BASAAir/"
+                         sh "ls -lrt"
+                 
+
+                        sh 'chmod 777 gradlew'
+
+                        sh './gradlew assembleGoogleQa'
+                        sh './gradlew assembleGoogleDebug'
+                         
+                                                   
+
+                     }catch(err){
+
+                        throw new Exception("No fue posible build variants \n ERROR:${err}")
+
+                    } 
+
+                }
+
+
+                             
+                def sendNotifications(def String statusPipeline,telegramGroupdId){
+
+                    def date = LocalDateTime.now()
+
+                    def telegramGroup = telegramGroupdId
+
+                    def BUILD_TRIGGER_BY = "${currentBuild.getBuildCauses()[0].shortDescription} / ${currentBuild.getBuildCauses()[0].userId}"
+
+                    def textResponse = """ \"text\":\"*DEPLOY ${statusPipeline} ARTIFACT*
+
+                    - *Date Deploy* : _${date}_
+
+                    - *Artifact* : _airbaz-${params.projectType}_
+
+                    - *Version*: _${versionNexus}_
+
+                    - *Ejecution* : _${env.BUILD_NUMBER}_
+
+                    - _${BUILD_TRIGGER_BY}_\" """
+
+                    withCredentials([string(credentialsId:'telegram-bot-token-sdk', variable: 'token')]) {
+
+                        sh "curl -k -X GET https://api.telegram.org/bot${token}/sendMessage -H 'Content-Type: application/json' -d '{\"chat_id\":${telegramGroup},${textResponse},\"parse_mode\":\"Markdown\"} '" 
+
+                    }
+
+                }
+
+                return this
+
+
